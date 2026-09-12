@@ -8,7 +8,7 @@ class HttpxAdapter(ReconTool):
     binary_name = "httpx"
 
     def _get_binary(self) -> str:
-        """Use Go bin path to avoid Python httpx conflict."""
+        """Always use Go binary to avoid Python httpx conflict."""
         try:
             result = subprocess.run(
                 ["go", "env", "GOPATH"],
@@ -23,17 +23,27 @@ class HttpxAdapter(ReconTool):
         return self.execute_bulk([target])
 
     def execute_bulk(self, hosts: List[str]) -> List[dict]:
+        if not hosts:
+            return []
+
         prefixed = "\n".join(
             f"https://{h}"
             if not h.startswith("http") else h
             for h in hosts
         )
+
         binary = self._get_binary()
+
         try:
             result = subprocess.run(
                 [binary, "-silent", "-json",
-                 "-sc", "-title", "-server",
-                 "-tech-detect", "-ip"],
+                 "-sc",           # status code
+                 "-title",        # page title
+                 "-server",       # server header
+                 "-tech-detect",  # tech fingerprint
+                 "-ip",           # resolved IP
+                 "-cdn",          # CDN detection
+                 ],
                 input=prefixed,
                 capture_output=True,
                 text=True,
