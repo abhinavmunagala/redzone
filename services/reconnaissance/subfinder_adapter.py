@@ -1,19 +1,17 @@
 import json
 import subprocess
 from typing import List
-from .base import ReconTool
+from .base import ReconTool, get_go_bin_path
 
 
 class SubfinderAdapter(ReconTool):
     binary_name = "subfinder"
 
     def execute(self, target: str) -> List[dict]:
-        if not self.is_available():
-            print("[subfinder] not found in PATH")
-            return []
+        binary = get_go_bin_path("subfinder")
         try:
             result = subprocess.run(
-                ["subfinder", "-d", target,
+                [binary, "-d", target,
                  "-silent", "-json",
                  "-max-time", "20", "-t", "10"],
                 capture_output=True,
@@ -27,7 +25,8 @@ class SubfinderAdapter(ReconTool):
                         data = json.loads(line)
                         hosts.append({
                             "host": data.get("host", ""),
-                            "source": data.get("source", "subfinder"),
+                            "source": data.get(
+                                "source", "subfinder"),
                             "ip": data.get("ip", "")
                         })
                     except:

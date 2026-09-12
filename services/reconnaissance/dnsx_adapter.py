@@ -1,7 +1,7 @@
 import json
 import subprocess
 from typing import List
-from .base import ReconTool
+from .base import ReconTool, get_go_bin_path
 
 
 class DnsxAdapter(ReconTool):
@@ -11,12 +11,13 @@ class DnsxAdapter(ReconTool):
         return self.execute_bulk([target])
 
     def execute_bulk(self, hosts: List[str]) -> List[dict]:
-        if not self.is_available():
-            print("[dnsx] not found in PATH")
+        if not hosts:
             return []
+        binary = get_go_bin_path("dnsx")
         try:
             result = subprocess.run(
-                ["dnsx", "-silent", "-json", "-a", "-cname"],
+                [binary, "-silent", "-json",
+                 "-a", "-cname"],
                 input="\n".join(hosts),
                 capture_output=True,
                 text=True,
