@@ -10,20 +10,3 @@ langchain-groq>=0.1.0
 groq>=0.4.0
 certifi>=2024.0.0
 wafw00f>=5.0.0
-
-name: Main Config
-version: 1.0.0
-schema: v1
-models:
-  - name: Groq GPT-OSS 120B
-    provider: groq
-    model: openai/gpt-oss-120b
-    apiKey: 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
-  - name: Groq Qwen 3.6 27B
-    provider: groq
-    model: qwen/qwen3.6-27b
-    apiKey: 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
-  - name: Groq GPT-OSS 20B Fast
-    provider: groq
-    model: openai/gpt-oss-20b
-    apiKey: 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
