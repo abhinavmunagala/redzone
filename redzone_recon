@@ -1,0 +1,442 @@
+#!/usr/bin/env python3
+"""
+RedZone Unified Reconnaissance Dashboard CLI
+Consolidates Amass + Sn1per + all sources into one view
+"""
+
+import sys
+import json
+import argparse
+from pathlib import Path
+from datetime import datetime
+import uuid
+from collections import defaultdict
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from agents.passive_recon.agent import run_passive_recon
+from agents.passive_recon.schema import PassiveReconInput
+from services.reconnaissance.service import ReconnaissanceService
+
+
+def print_header(text):
+    """Print formatted header."""
+    print(f"\n{'='*70}")
+    print(f"  {text}")
+    print(f"{'='*70}\n")
+
+
+def print_subheader(text):
+    """Print subheader."""
+    print(f"\n[*] {text}")
+    print(f"{'─'*70}")
+
+
+def consolidate_results(domain):
+    """Run all reconnaissance tools and consolidate results."""
+    service = ReconnaissanceService(active_probing=False)
+    results = service.passive_recon_premium(domain)
+
+    # Consolidate subdomains by source
+    subdomains_by_source = defaultdict(list)
+    subdomains_consolidated = {}
+
+    for tool in ["amass", "sn1per"]:
+        for sub in results["subdomains"].get(tool, []):
+            host = sub["host"]
+            subdomains_by_source[host].append(tool)
+
+    # Calculate confidence (agreement from multiple sources)
+    for host, sources in subdomains_by_source.items():
+        confidence = len(sources) / 2  # 0.5-1.0
+        subdomains_consolidated[host] = {
+            "host": host,
+            "sources": sources,
+            "confidence": min(1.0, confidence),
+            "tool_agreement": len(sources)
+        }
+
+    return {
+        "domain": domain,
+        "raw_results": results,
+        "consolidated": {
+            "subdomains": subdomains_consolidated,
+            "asn_data": results["asn_info"],
+            "dns_records": results["dns_records"],
+            "intelligence": results["intelligence"],
+            "all_hosts": results["all_hosts"]
+        },
+        "statistics": {
+            "total_subdomains": len(subdomains_consolidated),
+            "high_confidence": len([
+                s for s in subdomains_consolidated.values()
+                if s["confidence"] >= 0.9
+            ]),
+            "medium_confidence": len([
+                s for s in subdomains_consolidated.values()
+                if 0.5 <= s["confidence"] < 0.9
+            ]),
+            "unique_ips": len(set(results["all_hosts"])),
+            "sources_used": set(results["techniques"]),
+            "data_sources": set(results["techniques"])
+        }
+    }
+
+
+def format_terminal_output(consolidated_data):
+    """Format consolidated data for terminal display."""
+    data = consolidated_data
+    domain = data["domain"]
+    stats = data["statistics"]
+    consolidated = data["consolidated"]
+
+    print_header(f"🔍 RedZone Unified Reconnaissance: {domain}")
+
+    # STATISTICS DASHBOARD
+    print_subheader("📊 RECONNAISSANCE SUMMARY")
+    print(f"  Total Subdomains:      {stats['total_subdomains']}")
+    print(f"  ├─ High Confidence:    {stats['high_confidence']} (✓✓)")
+    print(f"  ├─ Medium Confidence:  {stats['medium_confidence']} (✓)")
+    print(f"  └─ Unique IPs Found:   {stats['unique_ips']}")
+    print(f"\n  Tools Used:  {', '.join(sorted(stats['sources_used']))}")
+    print(f"  Data Sources: Amass + Sn1per + WHOIS + SSL/TLS")
+
+    # CONSOLIDATED SUBDOMAINS
+    if consolidated["subdomains"]:
+        print_subheader("🌐 ALL DISCOVERED SUBDOMAINS (Deduplicated & Consolidated)")
+
+        # Sort by confidence
+        sorted_subs = sorted(
+            consolidated["subdomains"].values(),
+            key=lambda x: x["confidence"],
+            reverse=True
+        )
+
+        # High confidence
+        high_conf = [s for s in sorted_subs if s["confidence"] >= 0.9]
+        if high_conf:
+            print("\n  [HIGH CONFIDENCE] ✓✓")
+            for sub in high_conf[:15]:
+                sources_str = f"({', '.join(sub['sources'])})"
+                conf_pct = f"{sub['confidence']:.0%}"
+                print(f"    • {sub['host']:<40} {sources_str:<20} {conf_pct}")
+            if len(high_conf) > 15:
+                print(f"    ... and {len(high_conf) - 15} more")
+
+        # Medium confidence
+        med_conf = [s for s in sorted_subs if 0.5 <= s["confidence"] < 0.9]
+        if med_conf:
+            print("\n  [MEDIUM CONFIDENCE] ✓")
+            for sub in med_conf[:10]:
+                sources_str = f"({', '.join(sub['sources'])})"
+                conf_pct = f"{sub['confidence']:.0%}"
+                print(f"    • {sub['host']:<40} {sources_str:<20} {conf_pct}")
+            if len(med_conf) > 10:
+                print(f"    ... and {len(med_conf) - 10} more")
+
+    # ASN INFORMATION
+    if consolidated["asn_data"]:
+        print_subheader("🗺️  NETWORK INFRASTRUCTURE (ASN Discovery)")
+        for asn in consolidated["asn_data"][:8]:
+            print(f"  • {asn['asn']:<12} {asn['org']}")
+            if asn.get("cidr_blocks"):
+                for cidr in asn.get("cidr_blocks", [])[:3]:
+                    print(f"      └─ {cidr}")
+        if len(consolidated["asn_data"]) > 8:
+            print(f"  ... and {len(consolidated['asn_data']) - 8} more ASNs")
+
+    # DNS RECORDS
+    if consolidated["dns_records"]:
+        print_subheader("📡 DNS RECORDS & CNAME CHAINS")
+        for dns in consolidated["dns_records"][:12]:
+            print(f"  • {dns['host']:<40} → {dns.get('value', 'N/A')}")
+            print(f"    Source: {dns.get('source', 'unknown')}")
+        if len(consolidated["dns_records"]) > 12:
+            print(f"  ... and {len(consolidated['dns_records']) - 12} more records")
+
+    # INTELLIGENCE
+    if consolidated["intelligence"]:
+        print_subheader("🔎 EXTRACTED INTELLIGENCE (WHOIS/SSL/DNS)")
+        intel = consolidated["intelligence"]
+        if intel.get("whois"):
+            print(f"\n  WHOIS Data:")
+            for item in intel.get("whois", [])[:5]:
+                print(f"    • {item}")
+        if intel.get("dns"):
+            print(f"\n  DNS Data:")
+            for item in intel.get("dns", [])[:5]:
+                print(f"    • {item}")
+        if intel.get("ssl"):
+            print(f"\n  SSL/TLS Data:")
+            for item in intel.get("ssl", [])[:5]:
+                print(f"    • {item}")
+
+    # SOURCE AGREEMENT MATRIX
+    print_subheader("📋 SOURCE AGREEMENT MATRIX")
+    source_counts = defaultdict(int)
+    for sub in consolidated["subdomains"].values():
+        for source in sub["sources"]:
+            source_counts[source] += 1
+
+    for source, count in sorted(source_counts.items()):
+        pct = (count / stats['total_subdomains']) * 100 if stats['total_subdomains'] > 0 else 0
+        bar = "█" * int(pct / 5)
+        print(f"  {source:<15} {count:>3} findings {bar:<20} {pct:.1f}%")
+
+    # EXPORT FORMATS AVAILABLE
+    print_subheader("💾 EXPORT OPTIONS")
+    print(f"  JSON:      redzone_recon {domain} --json")
+    print(f"  Save File: redzone_recon {domain} -o results.json")
+    print(f"  CSV:       redzone_recon {domain} --csv")
+    print(f"  HTML:      redzone_recon {domain} --html")
+
+
+def format_json_output(consolidated_data):
+    """Format for JSON export (UI ready)."""
+    return {
+        "metadata": {
+            "timestamp": datetime.utcnow().isoformat(),
+            "domain": consolidated_data["domain"],
+            "tool_version": "1.0.0"
+        },
+        "summary": {
+            "total_subdomains": consolidated_data["statistics"]["total_subdomains"],
+            "high_confidence_count": consolidated_data["statistics"]["high_confidence"],
+            "medium_confidence_count": consolidated_data["statistics"]["medium_confidence"],
+            "unique_ips": consolidated_data["statistics"]["unique_ips"],
+            "sources_used": list(consolidated_data["statistics"]["sources_used"])
+        },
+        "data": {
+            "subdomains": [
+                {
+                    "host": sub["host"],
+                    "confidence": sub["confidence"],
+                    "sources": sub["sources"],
+                    "tool_agreement": sub["tool_agreement"]
+                }
+                for sub in sorted(
+                    consolidated_data["consolidated"]["subdomains"].values(),
+                    key=lambda x: x["confidence"],
+                    reverse=True
+                )
+            ],
+            "asn_info": [
+                {
+                    "asn": asn["asn"],
+                    "organization": asn["org"],
+                    "cidr_blocks": asn.get("cidr_blocks", [])
+                }
+                for asn in consolidated_data["consolidated"]["asn_data"]
+            ],
+            "dns_records": [
+                {
+                    "host": dns["host"],
+                    "value": dns.get("value"),
+                    "type": dns.get("record_type", "CNAME"),
+                    "source": dns.get("source")
+                }
+                for dns in consolidated_data["consolidated"]["dns_records"]
+            ],
+            "intelligence": consolidated_data["consolidated"]["intelligence"]
+        }
+    }
+
+
+def run_cli():
+    """Main CLI interface."""
+    parser = argparse.ArgumentParser(
+        description="🔍 RedZone Unified Reconnaissance Dashboard",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+EXAMPLES:
+  redzone_recon example.com                    # Terminal view (consolidated)
+  redzone_recon example.com --json             # JSON output
+  redzone_recon example.com -o results.json    # Save to file
+  redzone_recon example.com --html             # HTML report
+  redzone_recon example.com --csv              # CSV export
+  redzone_recon example.com --deep             # Deep stealth mode
+
+This output is designed for:
+  ✓ Terminal viewing (human readable)
+  ✓ UI integration (structured JSON)
+  ✓ Automation pipelines (machine readable)
+        """
+    )
+
+    parser.add_argument("domain", help="Target domain")
+    parser.add_argument("--json", action="store_true", help="JSON output")
+    parser.add_argument("--csv", action="store_true", help="CSV export")
+    parser.add_argument("--html", action="store_true", help="HTML report")
+    parser.add_argument("--deep", action="store_true", help="Deep scan (slower)")
+    parser.add_argument("-o", "--output", help="Save to file")
+
+    args = parser.parse_args()
+    domain = args.domain.strip().lower()
+
+    if not domain:
+        print("[!] Invalid domain")
+        sys.exit(1)
+
+    try:
+        # Run consolidated reconnaissance
+        consolidated = consolidate_results(domain)
+
+        if args.json:
+            output = format_json_output(consolidated)
+            output_str = json.dumps(output, indent=2)
+
+            if args.output:
+                with open(args.output, "w") as f:
+                    f.write(output_str)
+                print(f"[+] Saved to {args.output}")
+            else:
+                print(output_str)
+
+        elif args.csv:
+            # CSV export
+            if args.output:
+                with open(args.output, "w") as f:
+                    f.write("host,confidence,sources,tool_agreement\n")
+                    for sub in consolidated["consolidated"]["subdomains"].values():
+                        f.write(
+                            f'{sub["host"]},{sub["confidence"]},'
+                            f'"{",".join(sub["sources"])}",{sub["tool_agreement"]}\n'
+                        )
+                print(f"[+] Saved to {args.output}")
+            else:
+                print("host,confidence,sources,tool_agreement")
+                for sub in consolidated["consolidated"]["subdomains"].values():
+                    print(
+                        f'{sub["host"]},{sub["confidence"]},'
+                        f'"{",".join(sub["sources"])}",{sub["tool_agreement"]}'
+                    )
+
+        elif args.html:
+            # HTML report
+            html_content = generate_html_report(consolidated)
+            if args.output:
+                with open(args.output, "w") as f:
+                    f.write(html_content)
+                print(f"[+] HTML report saved to {args.output}")
+            else:
+                print(html_content)
+
+        else:
+            # Terminal output (default)
+            format_terminal_output(consolidated)
+
+            if args.output:
+                json_output = format_json_output(consolidated)
+                with open(args.output, "w") as f:
+                    json.dump(json_output, f, indent=2)
+                print(f"\n[+] Data also saved to {args.output}")
+
+    except Exception as e:
+        print(f"[!] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+def generate_html_report(consolidated_data):
+    """Generate HTML report for UI display."""
+    data = consolidated_data
+    domain = data["domain"]
+    stats = data["statistics"]
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RedZone Recon: {domain}</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: #0f1419; color: #e0e0e0; }}
+        .container {{ max-width: 1200px; margin: 0 auto; }}
+        h1 {{ color: #00d9ff; border-bottom: 2px solid #00d9ff; padding-bottom: 10px; }}
+        h2 {{ color: #00b4d9; margin-top: 30px; }}
+        .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0; }}
+        .stat-card {{ background: #1a1f28; padding: 15px; border-left: 4px solid #00d9ff; border-radius: 5px; }}
+        .stat-value {{ font-size: 28px; font-weight: bold; color: #00d9ff; }}
+        .stat-label {{ font-size: 12px; color: #888; margin-top: 5px; }}
+        table {{ width: 100%; border-collapse: collapse; margin: 20px 0; background: #1a1f28; }}
+        th {{ background: #0a0d12; padding: 10px; text-align: left; color: #00d9ff; border-bottom: 2px solid #00d9ff; }}
+        td {{ padding: 10px; border-bottom: 1px solid #2a2f38; }}
+        tr:hover {{ background: #2a2f38; }}
+        .high-conf {{ color: #00ff00; }}
+        .med-conf {{ color: #ffaa00; }}
+        .footer {{ margin-top: 40px; font-size: 12px; color: #666; text-align: center; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 RedZone Reconnaissance Report: {domain}</h1>
+
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-value">{stats['total_subdomains']}</div>
+                <div class="stat-label">Total Subdomains</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{stats['high_confidence']}</div>
+                <div class="stat-label">High Confidence (✓✓)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{stats['medium_confidence']}</div>
+                <div class="stat-label">Medium Confidence (✓)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{stats['unique_ips']}</div>
+                <div class="stat-label">Unique IPs</div>
+            </div>
+        </div>
+
+        <h2>Consolidated Subdomains</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Subdomain</th>
+                    <th>Confidence</th>
+                    <th>Sources</th>
+                    <th>Tool Agreement</th>
+                </tr>
+            </thead>
+            <tbody>
+"""
+
+    for sub in sorted(
+        data["consolidated"]["subdomains"].values(),
+        key=lambda x: x["confidence"],
+        reverse=True
+    )[:50]:
+        conf_class = "high-conf" if sub["confidence"] >= 0.9 else "med-conf"
+        conf_pct = f"{sub['confidence']:.0%}"
+        sources = ", ".join(sub["sources"])
+        html += f"""                <tr>
+                    <td>{sub['host']}</td>
+                    <td class="{conf_class}">{conf_pct}</td>
+                    <td>{sources}</td>
+                    <td>{sub['tool_agreement']}/2</td>
+                </tr>
+"""
+
+    html += """            </tbody>
+        </table>
+
+        <div class="footer">
+            <p>Generated by RedZone Unified Reconnaissance Dashboard</p>
+            <p>Data from: Amass + Sn1per + WHOIS + SSL/TLS Certificate Transparency</p>
+        </div>
+    </div>
+</body>
+</html>"""
+
+    return html
+
+
+if __name__ == "__main__":
+    try:
+        run_cli()
+    except KeyboardInterrupt:
+        print("\n[!] Interrupted")
+        sys.exit(1)

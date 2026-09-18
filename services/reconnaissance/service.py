@@ -5,6 +5,8 @@ from .httpx_adapter import HttpxAdapter
 from .crtsh_adapter import CrtshAdapter
 from .ipinfo_adapter import IpinfoAdapter
 from .naabu_adapter import NaabuAdapter
+from .amass_adapter import AmassAdapter
+from .sn1per_adapter import Sn1perAdapter
 
 
 class ReconnaissanceService:
@@ -22,6 +24,8 @@ class ReconnaissanceService:
         self.crtsh = CrtshAdapter()
         self.ipinfo = IpinfoAdapter()
         self.naabu = NaabuAdapter()
+        self.amass = AmassAdapter()
+        self.sn1per = Sn1perAdapter()
 
     def discover_assets(self, domain: str) -> dict:
         print(f"[recon] discovering assets for {domain}")
@@ -45,6 +49,47 @@ class ReconnaissanceService:
             "hosts": all_hosts,
             "subdomains": subfinder_results,
             "certificates": cert_results
+        }
+
+    def passive_recon_premium(self, domain: str) -> dict:
+        """
+        Deep passive reconnaissance using Amass + Sn1per.
+        No active scanning, pure OSINT.
+        """
+        print(f"[recon] premium passive recon for {domain}")
+
+        amass_subdomains = self.amass.enum_passive(domain)
+        amass_asn = self.amass.asn_discovery(domain)
+        amass_dns = self.amass.dns_records(domain)
+
+        sn1per_results = self.sn1per.scan_light(domain)
+        sn1per_intel = self.sn1per.extract_intelligence(domain)
+
+        all_hosts = list(set(
+            [s["host"] for s in amass_subdomains] +
+            [s["host"] for s in sn1per_results
+             if s.get("type") == "subdomain"]
+        ))[:50]
+
+        return {
+            "domain": domain,
+            "subdomains": {
+                "amass": amass_subdomains,
+                "sn1per": [
+                    s for s in sn1per_results
+                    if s.get("type") == "subdomain"
+                ]
+            },
+            "asn_info": amass_asn,
+            "dns_records": amass_dns,
+            "intelligence": sn1per_intel,
+            "all_hosts": all_hosts,
+            "techniques": [
+                "amass_passive",
+                "sn1per_light",
+                "whois_lookup",
+                "dns_analysis"
+            ]
         }
 
     def discover_hosts(self, hosts: List[str]) -> dict:

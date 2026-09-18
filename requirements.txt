@@ -9,4 +9,4 @@ pytest>=8.0.0
 langchain-groq>=0.1.0
 groq>=0.4.0
 certifi>=2024.0.0
-wafw00f>=5.0.0
+wafw00f>=2.4.0
